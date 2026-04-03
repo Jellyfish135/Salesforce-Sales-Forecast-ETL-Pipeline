@@ -1,102 +1,103 @@
-# Salesforce Sales Forecast ETL Pipeline
+# 📊 Salesforce Sales Forecast ETL Pipeline
 
-A Python ETL pipeline that transforms a multi-sheet Excel sales forecast workbook into Salesforce-ready CSVs for bulk upsert — eliminating manual data entry and reducing sync time by over 85%.
+> A Python ETL pipeline that transforms Excel sales forecasts into Salesforce-ready CSVs — automating data sync and eliminating 15+ hours of manual work per upload cycle.
 
-Built during a software engineering internship to automate a recurring manual process that previously required 15+ hours of work per upload cycle.
-
----
-
-## What It Does
-
-Sales forecast data lives in a structured Excel workbook maintained by the sales team. This pipeline:
-
-1. **Extracts** data from a multi-sheet `.xlsm` workbook using dynamic header detection (no hardcoded row numbers)
-2. **Transforms** the raw data — normalizing sales statuses, resolving account names, generating composite keys, and computing transaction dates
-3. **Loads** the output as two structured CSVs ready for Salesforce bulk upsert:
-   - `output_opportunity.csv` — one row per sales opportunity
-   - `output_products.csv` — one row per monthly revenue line item
-
-After uploading opportunities, the pipeline reads back the Salesforce-assigned IDs from the Dataloader success file and stitches them into the product CSV automatically.
+![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat&logo=python&logoColor=white)
+![pandas](https://img.shields.io/badge/pandas-2.0+-150458?style=flat&logo=pandas&logoColor=white)
+![Salesforce](https://img.shields.io/badge/Salesforce-Sales%20Cloud-00A1E0?style=flat&logo=salesforce&logoColor=white)
+![License](https://img.shields.io/badge/license-MIT-green?style=flat)
 
 ---
 
-## Architecture
+## 📌 Overview
 
+Sales forecast data lives in a structured Excel workbook maintained by the sales team. Manually copying this into Salesforce was taking **15+ hours per upload cycle**.
+
+This pipeline automates the entire process:
+
+- **Extracts** data from a multi-sheet `.xlsm` workbook with dynamic header detection
+- **Transforms** raw data — normalizing statuses, resolving account names, generating composite keys, and computing transaction dates
+- **Loads** two structured CSVs ready for Salesforce bulk upsert
+
+---
+
+## 🔄 Pipeline Architecture
+
+```mermaid
+flowchart TD
+    A[📂 Excel Workbook\n.xlsm] --> B[load_data\nDynamic header detection]
+    B --> C[build_core_df\nTransform & enrich]
+
+    C --> D{MODE?}
+
+    D -->|opportunity| E[export_opportunity\noutput_opportunity.csv]
+    D -->|product| G[build_id_map\nRead success_opp.csv]
+
+    E --> F[🚀 Upsert in Salesforce\nvia Dataloader.io]
+    F --> H[📥 Download success file\nsuccess_opp.csv]
+    H --> G
+    G --> I[export_products\noutput_products.csv]
+    I --> J[🚀 Upsert OpportunityLineItem\nvia Dataloader.io]
+
+    style A fill:#f0f4ff,stroke:#4a6cf7
+    style F fill:#e6f4ea,stroke:#34a853
+    style J fill:#e6f4ea,stroke:#34a853
 ```
-Excel Workbook (.xlsm)
-        │
-        ▼
-┌──────────────────┐
-│   load_data()    │  Dynamic header detection via "Sales Status" scan
-└────────┬─────────┘
-         │
-         ▼
-┌──────────────────┐
-│  build_core_df() │  Status normalization · Account mapping · Key generation
-└────────┬─────────┘
-         │
-    ┌────┴────┐
-    ▼         ▼
-Opportunity  Product
-   CSV        CSV   ← stitched with Salesforce IDs from success file
+
+---
+
+## 🗂️ Workflow
+
+```mermaid
+sequenceDiagram
+    participant U as You
+    participant ETL as ETL Pipeline
+    participant SF as Salesforce
+
+    U->>ETL: Run MODE = "opportunity"
+    ETL->>ETL: Parse Excel & transform data
+    ETL-->>U: output_opportunity.csv
+
+    U->>SF: Upsert via Dataloader.io
+    SF-->>U: success_opp.csv (with SF IDs)
+
+    U->>ETL: Run MODE = "product"
+    ETL->>ETL: Stitch SF IDs from success file
+    ETL-->>U: output_products.csv
+
+    U->>SF: Upsert OpportunityLineItem
+    SF-->>U: ✅ Done
 ```
 
 ---
 
-## Pipeline Stages
+## ⚙️ Setup
 
-### Stage 1 — Opportunity Export
+### Prerequisites
 
 ```bash
-# Set MODE = "opportunity" in etl.py, then run:
-python etl.py
+pip install pandas openpyxl
 ```
 
-Outputs `output_opportunity.csv`. Upload this to Salesforce via Dataloader.io using `OPX_Composite_Key__c` as the External ID.
+> Python 3.10+ required
 
-### Stage 2 — Product Export
-
-Download the Dataloader.io success file → save as `success_opp.csv`, then:
-
-```bash
-# Set MODE = "product" in etl.py, then run:
-python etl.py
-```
-
-The pipeline reads `success_opp.csv` to map each opportunity to its Salesforce ID (`006...`), then outputs `output_products.csv` with one row per non-zero monthly revenue entry.
-
----
-
-## Key Design Decisions
-
-| Problem | Solution |
-|---|---|
-| Header row position varies per sheet | Scan first 80 rows for "Sales Status" dynamically |
-| Excel date columns import as datetime objects | `clean_header()` normalizes all headers to `Mon-YY` string format |
-| Same opportunity appears across multiple sheets | Composite key `OPX\|FiscalYear` deduplicates at upsert |
-| Product rows need parent Opportunity SF ID | ID skimming from Dataloader success file, with unmatched key warnings |
-| Currency values include symbols and commas | `parse_currency()` strips `¥`, `$`, `,` before numeric conversion |
-| BOM characters in CSV headers | All CSVs written with `utf-8-sig` encoding |
-
----
-
-## Salesforce Setup (One-Time)
+### Salesforce (One-Time)
 
 Add two custom External ID fields before first use:
 
 | Object | Field API Name | Type | Options |
 |---|---|---|---|
-| Opportunity | `OPX_Composite_Key__c` | Text(80) | External ID ✅ Unique ✅ |
-| OpportunityLineItem | `OPX_Product_Key__c` | Text(100) | External ID ✅ Unique ✅ |
+| Opportunity | `OPX_Composite_Key__c` | Text(80) | ✅ External ID, ✅ Unique |
+| OpportunityLineItem | `OPX_Product_Key__c` | Text(100) | ✅ External ID, ✅ Unique |
 
 ---
 
-## Configuration
+## 🛠️ Configuration
 
-Edit the `CONFIGURATION` section at the top of `etl.py`:
+Edit the `CONFIGURATION` block at the top of `etl.py`:
 
 ```python
-MODE        = "opportunity"     # "opportunity" or "product"
+MODE        = "opportunity"        # "opportunity" or "product"
 FILE        = Path("SALES-FORECAST.xlsm")
 SHEET       = "2026"
 FISCAL_YEAR = 2026
@@ -116,53 +117,108 @@ USER_MAP = {
 
 ---
 
-## Requirements
+## 🚀 Usage
 
-```
-pandas
-openpyxl
-```
+### Step 1 — Export Opportunities
 
 ```bash
-pip install pandas openpyxl
+# Set MODE = "opportunity" in etl.py
+python etl.py
 ```
 
-Python 3.10+ required (uses `float | None` union type hint).
+Upload `output_opportunity.csv` to Salesforce via Dataloader.io using `OPX_Composite_Key__c` as the External ID.
+
+### Step 2 — Export Products
+
+Download the Dataloader.io success file → save as `success_opp.csv`, then:
+
+```bash
+# Set MODE = "product" in etl.py
+python etl.py
+```
 
 ---
 
-## Output Format
+## 📤 Output Format
 
-### output_opportunity.csv
+### `output_opportunity.csv`
 
 | Column | Description |
 |---|---|
-| `OPX_Composite_Key__c` | External ID for upsert: `OPX-1234\|2026` |
+| `OPX_Composite_Key__c` | Upsert key: `OPX-1234\|2026` |
 | `Account_Name` | Resolved Salesforce account name |
-| `Customer Project` | Opportunity name (Customer + Project Name) |
+| `Customer Project` | Opportunity name (Customer + Project) |
 | `Sales Status` | Normalized Salesforce stage name |
-| `Closed Date` | Jan 1 or Dec 31 depending on OPX suffix |
+| `Closed Date` | Jan 1 or Dec 31 based on OPX suffix |
 | `Transaction Date` | Last day of month before first revenue |
 | `Opportunity_Owner` | Resolved Salesforce user full name |
 
-### output_products.csv
+### `output_products.csv`
 
 | Column | Description |
 |---|---|
-| `OPX_Product_Key__c` | External ID: `OPX-1234\|2026\|M06 Revenue` |
-| `Opportunity_ID` | Salesforce Opportunity ID (006...) from success file |
+| `OPX_Product_Key__c` | Upsert key: `OPX-1234\|2026\|M06 Revenue` |
+| `Opportunity_ID` | Salesforce ID (006...) from success file |
 | `Product_Name` | e.g. `M06 Revenue` |
 | `UnitPrice` | Revenue value for that month |
 | `Transaction_Date` | First day of the revenue month |
 
 ---
 
-## Error Handling
+## 🧠 Key Design Decisions
 
-- Missing `Sales Status` header → exits with a descriptive message
-- Missing success file → exits before product stage begins
-- Unmatched Salesforce IDs → logged as warnings, not silent failures
-- Duplicate composite keys in success file → flagged with full row output
-- Invalid currency values → skipped via `pd.to_numeric(errors="coerce")`
-# Salesforce-Sales-Forecast-ETL-Pipeline
-# Salesforce-Sales-Forecast-ETL-Pipeline
+```mermaid
+mindmap
+  root((ETL Design))
+    Extraction
+      Dynamic header scan
+        No hardcoded row numbers
+        Scans first 80 rows for Sales Status
+      Date normalization
+        Excel datetime to Mon-YY string
+    Transformation
+      Composite keys
+        OPX|FiscalYear for opportunities
+        OPX|FiscalYear|Month for products
+      Status normalization
+        Strips numeric prefixes
+        Maps to SF picklist values
+      Currency parsing
+        Strips symbols and commas
+    Loading
+      ID skimming
+        Reads Dataloader success file
+        Maps composite key to SF ID
+      Encoding
+        utf-8-sig strips BOM characters
+    Reliability
+      Warnings not silent failures
+        Unmatched SF IDs logged
+        Duplicate keys flagged
+```
+
+---
+
+## 🛡️ Error Handling
+
+| Scenario | Behaviour |
+|---|---|
+| `Sales Status` header not found | Exits with descriptive message |
+| Success file missing | Exits before product stage |
+| Unmatched Salesforce IDs | Logged as warnings, not silent failures |
+| Duplicate composite keys | Flagged with full row output |
+| Invalid currency values | Skipped via `pd.to_numeric(errors="coerce")` |
+
+---
+
+## 📁 Project Structure
+
+```
+salesforce-forecast-etl/
+├── etl.py                  # Main pipeline script
+├── SALES-FORECAST.xlsm     # Input workbook (not included)
+├── success_opp.csv         # Dataloader success file (generated)
+├── output_opportunity.csv  # Stage 1 output (generated)
+├── output_products.csv     # Stage 2 output (generated)
+└── README.md
+```
